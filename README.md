@@ -55,6 +55,7 @@ npm run dev
 | 人群圈选 | `crowd_select` | 圈选条件 | 条件编号、条件名称、标签组合 |
 | 行为路径 | `behavior_path` | 路径模型 | 模型编号、起始事件、目标事件 |
 | 留存计算 | `retention_calc` | 留存配置 | 配置编号、初始行为、回访行为 |
+| 留存批次 | `retention_batch` | 批次明细 | 批次编号、分组、入组分母、回访区间、结果版本 |
 | 用户分群 | `user_segment` | 分群定义 | 分群编号、分群名称、基准行为 |
 | 生命周期价值 | `lifetime_value` | LTV模型 | 模型编号、用户分群、价值指标 |
 | 漏斗分析 | `funnel_analyze` | 漏斗定义 | 漏斗编号、漏斗名称、步骤序列 |
@@ -77,3 +78,18 @@ npm run dev
 
 领域：数据工程
 子方向：数据分析与数据应用
+
+## 留存批次
+
+留存计算不再是“每调一次接口就把事件全扫一遍”，而是先登记批次，再按批次计算：
+
+| 关注点 | 落地方式 |
+| --- | --- |
+| 合并读取 | 同一事件输入只生成一次事件、同一分段维度只聚合一次（批次上记 `input_scans` / `input_cache_hits`） |
+| 可续做明细 | `POST /api/retention-batch/submit` 带 `compute_limit` 只算前几组，`POST /{batch_id}/resume` 只补算待算组，已算组保留原版本 |
+| 计算队列 | `GET /api/retention-batch/queue` 逐条列出各组使用的入组分母、回访区间、结果版本与是否复用 |
+| 结果复用 | 同条件且已确认的结果在下一批次直接复用；补充更正会作废旧版本 |
+| 补报 | `POST /{batch_id}/supplement` 只更正已算完的组，未算完的组进 `skipped`；更正后该组进入“待重算” |
+| 批量重试 | `POST /{batch_id}/retry` 返回 `retry_summary`，用 `affected_by_correction` 说明哪些计算受此次更正影响，并列出 `stale_valuations` |
+| 预测校准 | LTV 校准只从已确认批次取曲线（`GET` 语义见 `get_confirmed_retention_curve`）；批次未确认或该组待重算时返回 409，不混用数据 |
+| 可核对 | 批次明细带 `reused` / `reused_from`；`GET /api/lifetime-value/calibrations` 记录每次估值用的批次、组别与结果版本 |

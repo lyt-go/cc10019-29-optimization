@@ -1,11 +1,12 @@
 """LTV预测引擎：基于用户分群和历史行为预测生命周期价值。"""
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 from app.store import store
 from app.schemas import LtvResult
-from app.services.retention_calc import get_retention_result
+from app.services.retention_batch import get_confirmed_retention_curve
 
 
 def predict_ltv(model_id: str) -> LtvResult:
@@ -90,28 +91,39 @@ def get_ltv_result(model_id: str) -> dict[str, Any] | None:
         return None
 
 
-def ltv_with_retention(model_id: str, retention_config_id: str) -> dict[str, Any]:
-    """结合留存率校准LTV预测。"""
-    ltv_result = get_ltv_result(model_id)
-    retention_result = get_retention_result(retention_config_id)
+def ltv_with_retention(model_id: str, retention_config_id: str, batch_id: str | None = None) -> dict[str, Any]:
+    """结合留存率校准LTV预测。
 
-    if ltv_result is None or retention_result is None:
-        raise ValueError("Result not found")
+    留存结果只从确认过的留存批次明细读取；批次未确认、或该组还在补报重算时
+    直接拒绝，绝不把未确认的入组数据与已有曲线混用。
+    """
+    ltv_result = get_ltv_result(model_id)
+    if ltv_result is None:
+        raise ValueError("LTV result not found")
+
+    # 未确认/未完成会抛 ValueError，由路由层转成 409/404。
+    curve = get_confirmed_retention_curve(retention_config_id, batch_id)
 
     # 使用留存率调整预测
-    retention_rates = retention_result.get("retention_rates", {})
-    avg_retention = 0.0
-    if retention_rates:
-        first_key = list(retention_rates.keys())[0]
-        rates = retention_rates[first_key]
-        avg_retention = sum(rates) / len(rates) if rates else 0.0
-
+    avg_retention = float(curve["avg_retention_rate"])
     adjusted_ltv = ltv_result["avg_ltv"] * (0.5 + 0.5 * avg_retention)
 
-    return {
+    result = {
         "model_id": model_id,
+        "segment_id": ltv_result.get("segment_id", ""),
         "retention_config_id": retention_config_id,
+        "batch_id": curve["batch_id"],
+        "result_version": curve["result_version"],
+        "cohort_denominator": curve["cohort_denominator"],
         "original_ltv": ltv_result["avg_ltv"],
         "retention_adjusted_ltv": round(adjusted_ltv, 2),
         "avg_retention_rate": round(avg_retention, 4),
+        "calibration_curve": curve["calibration_curve"],
+        "reused": curve["reused"],
+        "reused_from": curve["reused_from"],
+        "groups_used": curve["groups_used"],
+        "calibrated_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
+    # 记录估值引用了哪一批次、哪一组、哪个结果版本，便于补报后核对。
+    store.set_artifact("lifetime_value_calibration", model_id, result)
+    return result

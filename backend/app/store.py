@@ -14,6 +14,9 @@ class Store:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        # 批次与队列是运行期登记的数据，没有预置示例行。
+        self._tables.setdefault("retention_batch", [])
+        self._tables.setdefault("retention_queue", [])
         # 数据产物存储：跨模块共享的数据结果
         self._artifacts: dict[str, dict[str, Any]] = {}
         # 版本快照

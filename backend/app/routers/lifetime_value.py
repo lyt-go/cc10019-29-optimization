@@ -22,6 +22,13 @@ def index(page: int = 1, size: int = 20) -> dict[str, Any]:
 
 
 
+@router.get("/calibrations")
+def calibrations() -> dict[str, Any]:
+    """列出估值引用的留存批次组别，便于补报后核对。"""
+    items = store.list_artifacts("lifetime_value_calibration")
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
     rows = store.rows("lifetime_value")
@@ -54,11 +61,15 @@ def result(model_id: str) -> dict[str, Any]:
 @router.post("/{model_id}/calibrate")
 def calibrate(model_id: str, payload: dict[str, Any]) -> ActionResult:
     retention_config_id = payload.get("retention_config_id", "")
+    batch_id = payload.get("batch_id") or None
     try:
-        result = ltv_with_retention(model_id, retention_config_id)
+        result = ltv_with_retention(model_id, retention_config_id, batch_id)
         return ActionResult(ok=True, message="Calibrated", entry=result)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        message = str(e)
+        if "尚未确认" in message or "尚未确认完成" in message:
+            raise HTTPException(status_code=409, detail=message)
+        raise HTTPException(status_code=404, detail=message)
 
 
 @router.post("/{entry_id}/actions")

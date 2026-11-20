@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from typing import Any
-from collections import defaultdict
 
 from app.store import store
 from app.schemas import RetentionResult
@@ -35,82 +34,11 @@ def _generate_retention_events(event_id: str, base_date: str, days: int) -> list
 
 
 def calculate_retention(config_id: str) -> RetentionResult:
-    """执行留存计算。"""
-    config = store.find_by_field("retention_calc", "config_id", config_id)
-    if config is None:
-        raise ValueError(f"Retention config not found: {config_id}")
+    """执行留存计算：走留存批次明细，结果登记后可直接被 LTV 校准复用。"""
+    # 延迟导入：retention_batch 依赖本模块的事件生成与日期工具。
+    from app.services.retention_batch import run_single_config_batch
 
-    init_event = config["init_event"]
-    return_event = config["return_event"]
-    calc_period = config.get("calc_period", "day")
-    segment_dim = config.get("segment_dim", "")
-    base_date = config["base_date"]
-    retention_window = config.get("retention_window", 30)
-
-    # 生成事件数据
-    events = _generate_retention_events(init_event, base_date, retention_window)
-
-    # 按日期和用户分组
-    date_users: dict[str, set[str]] = defaultdict(set)
-    dim_date_users: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
-
-    for e in events:
-        date_users[e["date"]].add(e["user_id"])
-        if segment_dim:
-            dim_val = e.get(segment_dim, "unknown")
-            dim_date_users[dim_val][e["date"]].add(e["user_id"])
-
-    # 计算留存率
-    cohort_sizes: dict[str, int] = {}
-    retention_rates: dict[str, list[float]] = {}
-
-    # 基准日期的用户作为初始队列
-    init_date = base_date
-    init_users = date_users.get(init_date, set())
-    cohort_sizes[init_date] = len(init_users)
-    retention_rates[init_date] = []
-
-    for day in range(retention_window):
-        target_date = _add_days(base_date, day)
-        target_users = date_users.get(target_date, set())
-        retained = init_users & target_users
-        rate = len(retained) / len(init_users) if init_users else 0.0
-        retention_rates[init_date].append(round(rate, 4))
-
-    # 按维度分段
-    if segment_dim:
-        for dim_val, dim_data in dim_date_users.items():
-            dim_init_users = dim_data.get(init_date, set())
-            key = f"{segment_dim}:{dim_val}"
-            cohort_sizes[key] = len(dim_init_users)
-            retention_rates[key] = []
-            for day in range(retention_window):
-                target_date = _add_days(base_date, day)
-                target_users = dim_data.get(target_date, set())
-                retained = dim_init_users & target_users
-                rate = len(retained) / len(dim_init_users) if dim_init_users else 0.0
-                retention_rates[key].append(round(rate, 4))
-
-    result = RetentionResult(
-        config_id=config_id,
-        init_event=init_event,
-        return_event=return_event,
-        base_date=base_date,
-        cohort_sizes=cohort_sizes,
-        retention_rates=retention_rates,
-        result_table=config.get("result_table", ""),
-    )
-
-    # 存储产物
-    store.set_artifact("retention_calc", config_id, result.model_dump())
-
-    # 更新状态
-    store.update("retention_calc", config["id"], {
-        "status": "已完成",
-        "pending": False,
-    })
-
-    return result
+    return run_single_config_batch(config_id)
 
 
 def _add_days(date_str: str, days: int) -> str:
